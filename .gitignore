@@ -1,0 +1,7 @@
+.build/
+oracle/goldens/
+oracle/weights/
+*.safetensors
+!Tests/**/Resources/*.safetensors
+# eyeball outputs (reproducible with `vosr-smoke run|engine`); the logs stay tracked
+oracle/reports/**/*.png

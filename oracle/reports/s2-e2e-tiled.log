@@ -1,0 +1,17 @@
+gate lane: CPU fp32 · goldens goldens.safetensors (42 arrays)
+loaded vae in 0.0s
+loaded dinov2 in 0.0s
+loaded transformer in 0.0s
+[S2] end-to-end 512² (torch noise injected)
+  e2e.latent_norm max|Δ| 8.702e-06  mean|Δ| 5.868e-07  |ref|max 2.11  rel 4.12e-06  cos 1.0000000  ✅
+  e2e.velocity max|Δ| 1.249e-05  mean|Δ| 1.247e-06  |ref|max 5.7  rel 2.19e-06  cos 1.0000001  ✅
+  e2e.latent_out max|Δ| 1.252e-05  mean|Δ| 1.247e-06  |ref|max 2.75  rel 4.55e-06  cos 1.0000000  ✅
+  e2e.output max|Δ| 2.191e-04  mean|Δ| 1.022e-06  |ref|max 1  rel 2.19e-04  cos 1.0000000  ✅
+  e2e PSNR 115.5 dB vs oracle · 9.4s
+[S5] tiled 1024² (3×3 latent tiles, torch noise injected)
+   tile 1/9
+   tile 9/9
+  tiled.latent_norm max|Δ| 9.060e-06  mean|Δ| 6.337e-07  |ref|max 2.14  rel 4.23e-06  cos 1.0000000  ✅
+  tiled.output max|Δ| 1.355e-04  mean|Δ| 5.990e-07  |ref|max 1  rel 1.36e-04  cos 1.0000001  ✅
+  tiled PSNR 121.8 dB vs oracle · 61.6s
+---- CPU gate summary: 6/6 pass

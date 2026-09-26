@@ -1,0 +1,8 @@
+# vosr-smoke engine — real MLXServeEngine path (register → run), explicit weightsDirectory, M5 Max, 2026-09-26
+# (runs marked 'overlapped' shared the GPU with a second measurement process; the 'clean' 4096² runs came after ~10 min of sustained load)
+engine: register 0.00s · run 2.3s (int8 512×512 → 1024×1024, appliedScale 2, rawBGRA8) · 0 tile reports (last -) · mean luma 117.0 · peak MLX 4.70 GB
+engine: register 0.00s · run 2.2s (fp16 512×512 → 1024×1024, appliedScale 2, png) · 0 tile reports (last -) · mean luma 117.0 · peak MLX 5.98 GB
+engine: register 0.00s · run 38.8s (fp16 1024×1024 → 4096×4096, appliedScale 4, png) · 0 tile reports (last -) · mean luma 117.0 · peak MLX 7.04 GB
+engine: register 0.00s · run 74.8s (int8 1024×1024 → 4096×4096, appliedScale 4, png) · 0 tile reports (last -) · mean luma 117.0 · peak MLX 5.35 GB
+clean 4096² fp16: run 69.4s peak 6.64 GB · clean 4096² int8: run 69.1s peak 5.35 GB · clean 2048² int8 (run mode): 14.1s peak 12.62 GB
+seam check on engine_x4_4096_fp16.png (VAE tiles 1024 px, blend bands 896–1024/1792–2048/2688–3072): mean|dx| bands/interior 0.95, mean|dy| 1.27 — no seam concentration (a hard seam reads 10×+)

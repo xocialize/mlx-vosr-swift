@@ -1,0 +1,3 @@
+S0 vae vae_fp32.safetensors  186 tensors, 0.045B params, loaded in 0.0s — 0 missing / 0 unused ✅
+S0 dinov2 dinov2_fp32.safetensors  256 tensors, 0.228B params, loaded in 0.0s — 0 missing / 0 unused ✅
+S0 transformer transformer_fp32.safetensors  849 tensors, 1.394B params, loaded in 0.0s — 0 missing / 0 unused ✅

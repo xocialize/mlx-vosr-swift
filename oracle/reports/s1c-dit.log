@@ -1,0 +1,17 @@
+gate lane: CPU fp32 · goldens goldens.safetensors (42 arrays)
+loaded transformer in 0.0s
+[S1c] LightningDiT sub-ops + full forward
+  dit.x_embedder max|Δ| 2.861e-06  mean|Δ| 2.246e-08  |ref|max 6.11  rel 4.69e-07  cos 0.9999999  ✅
+  dit.t_embedder max|Δ| 4.768e-07  mean|Δ| 1.857e-08  |ref|max 4.68  rel 1.02e-07  cos 0.9999999  ✅
+  dit.t_block max|Δ| 2.384e-07  mean|Δ| 5.162e-09  |ref|max 6.01  rel 3.97e-08  cos 1.0000000  ✅
+  dit.layer_norm max|Δ| 9.537e-07  mean|Δ| 1.533e-08  |ref|max 5.51  rel 1.73e-07  cos 1.0000000  ✅
+  dit.mlp_ca max|Δ| 8.345e-07  mean|Δ| 5.363e-08  |ref|max 1.2  rel 6.95e-07  cos 0.9999999  ✅
+  dit.block0.norm1 max|Δ| 1.431e-06  mean|Δ| 6.636e-09  |ref|max 6.64  rel 2.15e-07  cos 1.0000000  ✅
+  dit.block0 max|Δ| 5.722e-06  mean|Δ| 6.948e-08  |ref|max 6.65  rel 8.61e-07  cos 1.0000000  ✅
+  dit.block1 max|Δ| 4.530e-06  mean|Δ| 7.741e-08  |ref|max 7.68  rel 5.90e-07  cos 1.0000000  ✅
+  dit.block17 (chained) max|Δ| 1.022e-03  mean|Δ| 2.822e-07  |ref|max 126  rel 8.12e-06  cos 0.9999999  ✅
+  dit.block35 (chained) max|Δ| 3.433e-05  mean|Δ| 1.099e-06  |ref|max 35.6  rel 9.64e-07  cos 0.9999999  ✅
+  dit.final_layer max|Δ| 4.053e-06  mean|Δ| 2.349e-07  |ref|max 5.7  rel 7.12e-07  cos 0.9999999  ✅
+  dit.output max|Δ| 5.126e-06  mean|Δ| 4.454e-07  |ref|max 5.7  rel 9.00e-07  cos 1.0000000  ✅
+  8.8s
+---- CPU gate summary: 12/12 pass

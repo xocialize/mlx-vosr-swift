@@ -1,0 +1,39 @@
+gate lane: GPU fp32 · goldens goldens.safetensors (42 arrays)
+loaded vae in 0.0s
+loaded dinov2 in 0.0s
+loaded transformer in 0.0s
+[S1a] VAE
+  vae.quant_conv max|Δ| 5.302e-04  mean|Δ| 1.582e-04  |ref|max 21.3  rel 2.49e-05  cos 1.0000000  ✅
+  vae.latent_raw max|Δ| 1.900e-04  mean|Δ| 5.374e-05  |ref|max 4.96  rel 3.83e-05  cos 1.0000000  ✅
+  vae.latent_norm max|Δ| 1.012e-04  mean|Δ| 2.540e-05  |ref|max 2.11  rel 4.79e-05  cos 1.0000000  ✅
+  vae.decode_of_input_latent max|Δ| 3.210e-03  mean|Δ| 6.352e-06  |ref|max 1  rel 3.21e-03  cos 1.0000000  ✅
+  vae PSNR(decode) 99.1 dB · 0.8s
+[S1b] DINOv2
+  dino.input448 max|Δ| 8.918e-03  mean|Δ| 2.384e-03  |ref|max 2.64  rel 3.38e-03  cos 0.9999989  ❌ (tol 0.0001)
+  dino.patch_embed max|Δ| 4.053e-06  mean|Δ| 7.151e-08  |ref|max 3.51  rel 1.15e-06  cos 1.0000000  ✅
+  dino.block0 max|Δ| 5.247e-03  mean|Δ| 2.768e-05  |ref|max 4.32  rel 1.22e-03  cos 0.9999993  ❌ (tol 0.001)
+  dino.block17 max|Δ| 7.389e-01  mean|Δ| 9.767e-04  |ref|max 100  rel 7.37e-03  cos 0.9999877  ❌ (tol 0.002)
+  dino.z max|Δ| 7.389e-01  mean|Δ| 9.771e-04  |ref|max 100  rel 7.37e-03  cos 0.9999875  ❌ (tol 0.002)
+  0.4s
+[S1c] LightningDiT sub-ops + full forward
+  dit.x_embedder max|Δ| 2.384e-06  mean|Δ| 2.022e-08  |ref|max 6.11  rel 3.91e-07  cos 1.0000000  ✅
+  dit.t_embedder max|Δ| 4.768e-07  mean|Δ| 2.773e-08  |ref|max 4.68  rel 1.02e-07  cos 0.9999999  ✅
+  dit.t_block max|Δ| 2.384e-07  mean|Δ| 6.711e-09  |ref|max 6.01  rel 3.97e-08  cos 1.0000000  ✅
+  dit.layer_norm max|Δ| 9.537e-07  mean|Δ| 1.329e-08  |ref|max 5.51  rel 1.73e-07  cos 1.0000001  ✅
+  dit.mlp_ca max|Δ| 1.838e-03  mean|Δ| 2.456e-04  |ref|max 1.2  rel 1.53e-03  cos 0.9999999  ❌ (tol 0.001)
+  dit.block0.norm1 max|Δ| 1.431e-06  mean|Δ| 7.482e-09  |ref|max 6.64  rel 2.15e-07  cos 1.0000001  ✅
+  dit.block0 max|Δ| 9.395e-03  mean|Δ| 2.450e-04  |ref|max 6.65  rel 1.41e-03  cos 0.9999990  ❌ (tol 0.001)
+  dit.block1 max|Δ| 1.741e-02  mean|Δ| 2.328e-04  |ref|max 7.68  rel 2.27e-03  cos 0.9999991  ❌ (tol 0.001)
+  dit.block17 (chained) max|Δ| 7.911e+00  mean|Δ| 6.216e-04  |ref|max 126  rel 6.28e-02  cos 0.9996316  ❌ (tol 0.005)
+  dit.block35 (chained) max|Δ| 8.823e-02  mean|Δ| 1.932e-03  |ref|max 35.6  rel 2.48e-03  cos 0.9999986  ✅
+  dit.final_layer max|Δ| 7.153e-06  mean|Δ| 5.089e-07  |ref|max 5.7  rel 1.26e-06  cos 1.0000000  ✅
+  dit.output max|Δ| 7.019e-03  mean|Δ| 7.484e-04  |ref|max 5.7  rel 1.23e-03  cos 0.9999998  ✅
+  0.5s
+[S2] end-to-end 512² (torch noise injected)
+  e2e.latent_norm max|Δ| 1.012e-04  mean|Δ| 2.540e-05  |ref|max 2.11  rel 4.79e-05  cos 1.0000000  ✅
+  e2e.velocity max|Δ| 8.231e-03  mean|Δ| 7.840e-04  |ref|max 5.7  rel 1.45e-03  cos 0.9999996  ✅
+  e2e.latent_out max|Δ| 8.231e-03  mean|Δ| 7.840e-04  |ref|max 2.75  rel 2.99e-03  cos 0.9999988  ✅
+  e2e.output max|Δ| 1.919e-01  mean|Δ| 6.715e-04  |ref|max 1  rel 1.92e-01  cos 0.9999936  ❌ (tol 0.01)
+  e2e PSNR 58.0 dB vs oracle · 0.3s
+---- GPU gate summary: 16/25 pass
+GATE FAILED: dino.input448, dino.block0, dino.block17, dino.z, dit.mlp_ca, dit.block0, dit.block1, dit.block17 (chained), e2e.output

@@ -1,0 +1,15 @@
+gate lane: GPU fp32 · goldens goldens.safetensors (42 arrays)
+[S6] half-precision and int8 DiT tiers vs the fp32 oracle (torch noise injected; VAE/DINOv2 fp16)
+  fp16.velocity max|Δ| 1.998e-02  mean|Δ| 2.546e-03  |ref|max 5.7  rel 3.51e-03  cos 0.9999962  ✅
+  fp16.latent_out max|Δ| 1.998e-02  mean|Δ| 2.546e-03  |ref|max 2.75  rel 7.26e-03  cos 0.9999877
+  fp16.output max|Δ| 3.816e-01  mean|Δ| 2.016e-03  |ref|max 1  rel 3.82e-01  cos 0.9999530
+  fp16 PSNR 49.3 dB vs fp32 oracle · 0.3s · peak MLX 4.60 GB
+  fp16+int8.velocity max|Δ| 3.951e-02  mean|Δ| 3.593e-03  |ref|max 5.7  rel 6.94e-03  cos 0.9999927  ✅
+  fp16+int8.latent_out max|Δ| 3.951e-02  mean|Δ| 3.593e-03  |ref|max 2.75  rel 1.44e-02  cos 0.9999761
+  fp16+int8.output max|Δ| 4.872e-01  mean|Δ| 2.951e-03  |ref|max 1  rel 4.87e-01  cos 0.9999143
+  fp16+int8 PSNR 46.7 dB vs fp32 oracle · 0.6s · peak MLX 4.60 GB
+  bf16.velocity max|Δ| 9.974e-02  mean|Δ| 1.438e-02  |ref|max 5.7  rel 1.75e-02  cos 0.9998842  ✅
+  bf16.latent_out max|Δ| 9.974e-02  mean|Δ| 1.438e-02  |ref|max 2.75  rel 3.63e-02  cos 0.9996219
+  bf16.output max|Δ| 1.238e+00  mean|Δ| 1.077e-02  |ref|max 1  rel 1.24e+00  cos 0.9993060
+  bf16 PSNR 37.6 dB vs fp32 oracle · 0.6s · peak MLX 5.01 GB
+---- GPU gate summary: 9/9 pass

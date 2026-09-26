@@ -1,0 +1,32 @@
+gate lane: GPU fp32 · goldens goldens.safetensors (42 arrays)
+loaded vae in 0.0s
+loaded dinov2 in 0.0s
+loaded transformer in 0.0s
+[S1b] DINOv2
+  dino.input448 max|Δ| 1.173e-04  mean|Δ| 1.499e-06  |ref|max 2.64  rel 4.44e-05  cos 1.0000000  ✅
+  dino.patch_embed max|Δ| 4.053e-06  mean|Δ| 7.151e-08  |ref|max 3.51  rel 1.15e-06  cos 1.0000000  ✅
+  dino.block0 max|Δ| 4.220e-05  mean|Δ| 1.140e-07  |ref|max 4.32  rel 9.78e-06  cos 1.0000000  ✅
+  dino.block17 max|Δ| 5.287e-03  mean|Δ| 1.968e-06  |ref|max 100  rel 5.27e-05  cos 1.0000001  ✅
+  dino.z max|Δ| 5.287e-03  mean|Δ| 1.969e-06  |ref|max 100  rel 5.27e-05  cos 1.0000000  ✅
+  0.5s
+[S1c] LightningDiT sub-ops + full forward
+  dit.x_embedder max|Δ| 2.384e-06  mean|Δ| 2.022e-08  |ref|max 6.11  rel 3.91e-07  cos 1.0000000  ✅
+  dit.t_embedder max|Δ| 4.768e-07  mean|Δ| 2.773e-08  |ref|max 4.68  rel 1.02e-07  cos 0.9999999  ✅
+  dit.t_block max|Δ| 2.384e-07  mean|Δ| 6.711e-09  |ref|max 6.01  rel 3.97e-08  cos 1.0000000  ✅
+  dit.layer_norm max|Δ| 9.537e-07  mean|Δ| 1.329e-08  |ref|max 5.51  rel 1.73e-07  cos 1.0000001  ✅
+  dit.mlp_ca max|Δ| 2.146e-06  mean|Δ| 1.232e-07  |ref|max 1.2  rel 1.79e-06  cos 1.0000000  ✅
+  dit.block0.norm1 max|Δ| 1.431e-06  mean|Δ| 7.482e-09  |ref|max 6.64  rel 2.15e-07  cos 1.0000001  ✅
+  dit.block0 max|Δ| 1.407e-05  mean|Δ| 7.724e-08  |ref|max 6.65  rel 2.12e-06  cos 1.0000000  ✅
+  dit.block1 max|Δ| 8.345e-06  mean|Δ| 7.341e-08  |ref|max 7.68  rel 1.09e-06  cos 1.0000000  ✅
+  dit.block17 (chained) max|Δ| 1.472e-03  mean|Δ| 2.924e-07  |ref|max 126  rel 1.17e-05  cos 1.0000001  ✅
+  dit.block35 (chained) max|Δ| 1.106e-04  mean|Δ| 1.135e-06  |ref|max 35.6  rel 3.11e-06  cos 1.0000000  ✅
+  dit.final_layer max|Δ| 7.153e-06  mean|Δ| 5.089e-07  |ref|max 5.7  rel 1.26e-06  cos 1.0000000  ✅
+  dit.output max|Δ| 6.199e-06  mean|Δ| 6.473e-07  |ref|max 5.7  rel 1.09e-06  cos 1.0000000  ✅
+  0.6s
+[S2] end-to-end 512² (torch noise injected)
+  e2e.latent_norm max|Δ| 3.695e-06  mean|Δ| 2.923e-07  |ref|max 2.11  rel 1.75e-06  cos 0.9999999  ✅
+  e2e.velocity max|Δ| 1.323e-05  mean|Δ| 1.130e-06  |ref|max 5.7  rel 2.32e-06  cos 1.0000000  ✅
+  e2e.latent_out max|Δ| 1.323e-05  mean|Δ| 1.130e-06  |ref|max 2.75  rel 4.81e-06  cos 0.9999999  ✅
+  e2e.output max|Δ| 2.505e-04  mean|Δ| 1.029e-06  |ref|max 1  rel 2.50e-04  cos 1.0000001  ✅
+  e2e PSNR 115.0 dB vs oracle · 0.5s
+---- GPU gate summary: 21/21 pass

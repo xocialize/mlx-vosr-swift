@@ -1,0 +1,17 @@
+gate lane: CPU fp32 · goldens goldens.safetensors (42 arrays)
+loaded vae in 0.0s
+loaded dinov2 in 0.0s
+[S1a] VAE
+  vae.quant_conv max|Δ| 5.341e-05  mean|Δ| 4.203e-06  |ref|max 21.3  rel 2.51e-06  cos 1.0000002  ✅
+  vae.latent_raw max|Δ| 1.132e-05  mean|Δ| 1.130e-06  |ref|max 4.96  rel 2.28e-06  cos 1.0000000  ✅
+  vae.latent_norm max|Δ| 8.702e-06  mean|Δ| 5.868e-07  |ref|max 2.11  rel 4.12e-06  cos 1.0000000  ✅
+  vae.decode_of_input_latent max|Δ| 5.200e-05  mean|Δ| 3.581e-07  |ref|max 1  rel 5.20e-05  cos 0.9999999  ✅
+  vae PSNR(decode) 130.6 dB · 6.6s
+[S1b] DINOv2
+  dino.input448 max|Δ| 1.173e-04  mean|Δ| 1.499e-06  |ref|max 2.64  rel 4.44e-05  cos 1.0000001  ✅
+  dino.patch_embed max|Δ| 4.053e-06  mean|Δ| 7.151e-08  |ref|max 3.51  rel 1.15e-06  cos 1.0000001  ✅
+  dino.block0 max|Δ| 1.216e-05  mean|Δ| 7.702e-08  |ref|max 4.32  rel 2.82e-06  cos 1.0000000  ✅
+  dino.block17 max|Δ| 2.380e-03  mean|Δ| 1.328e-06  |ref|max 100  rel 2.37e-05  cos 0.9999999  ✅
+  dino.z max|Δ| 2.380e-03  mean|Δ| 1.329e-06  |ref|max 100  rel 2.37e-05  cos 0.9999998  ✅
+  1.7s
+---- CPU gate summary: 9/9 pass
