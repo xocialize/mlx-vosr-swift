@@ -8,6 +8,7 @@
 
 import Foundation
 import MLX
+import MLXExactConv
 import MLXNN
 
 // MARK: - EVA rotary helpers (models/pos_embed.py)
@@ -115,11 +116,12 @@ func makeTileGrid(length: Int, tile: Int, overlap: Int) -> [Int] {
 /// How a 3×3 conv inside mlx's Winograd F(6×6,3×3) window runs (mlx-swift ≤ 0.31.6 Metal numerics).
 /// mlx dispatches Winograd iff kernel 3×3 · stride 1 · dilation 1 · groups 1 · C % 32 == 0 · O % 32 == 0 ·
 /// C + O ≥ 256 · N·H·W ≥ 4096. On M5 that path runs its inner GEMM in TF32 (~6.4e-3 relL2 per conv in
-/// fp32, ~5.8e-2 in bf16). conv3d with kT = 1 lands on the exact implicit-GEMM kernel.
+/// fp32, ~5.8e-2 in bf16). The exact route is MLXExactConv (mlx-exact-conv-swift), which holds on mlx-swift
+/// 0.31.x and 0.32.x; the old kT = 1 conv3d form went back to Winograd on 0.32 (mlx#3785).
 public enum VOSRConvRoute: String, Sendable {
     /// mlx's default kernel — fastest, lossy on M5 inside the window.
     case winograd
-    /// conv3d with kT = 1 — exact in every dtype, 1.3–4× slower at 256/512-channel shapes.
+    /// Exact implicit-GEMM path (MLXExactConv); the name is kept from the original kT = 1 conv3d route.
     case conv3d
 
     /// `VOSR_VAE_CONV_ROUTE` = winograd | conv3d, if set (validation lever).
@@ -128,26 +130,18 @@ public enum VOSRConvRoute: String, Sendable {
     }
 }
 
-/// A `Conv2d` whose forward takes the exact conv3d route when the input hits mlx's Winograd window.
+/// A `Conv2d` whose forward takes the exact route when the input hits mlx's Winograd window.
 /// Shapes outside the window always run plain conv2d (already exact). Same keys as `Conv2d`.
 final class WinogradFreeConv2d: Conv2d {
     var route: VOSRConvRoute = VOSRConvRoute.environmentOverride ?? .conv3d
 
     /// mlx's Winograd dispatch predicate, evaluated on the actual NHWC input.
     static func takesWinograd(input x: MLXArray, weight: MLXArray, stride: (Int, Int), dilation: (Int, Int), groups: Int) -> Bool {
-        guard x.ndim == 4, groups == 1, stride == (1, 1), dilation == (1, 1),
-              weight.dim(1) == 3, weight.dim(2) == 3 else { return false }
-        let (c, o) = (x.dim(3), weight.dim(0))
-        return c % 32 == 0 && o % 32 == 0 && c + o >= 256 && x.dim(0) * x.dim(1) * x.dim(2) >= 4096
+        ExactConv.takesWinograd2D(input: x, weight: weight, stride: stride, dilation: dilation, groups: groups)
     }
 
     override func callAsFunction(_ x: MLXArray) -> MLXArray {
-        guard route == .conv3d,
-              Self.takesWinograd(input: x, weight: weight, stride: stride, dilation: dilation, groups: groups)
-        else { return super.callAsFunction(x) }
-        var y = conv3d(x.expandedDimensions(axis: 1), weight.expandedDimensions(axis: 1),
-                       stride: [1, 1, 1], padding: [0, padding.0, padding.1]).squeezed(axis: 1)
-        if let bias { y = y + bias }
-        return y
+        ExactConv.conv2d(x, weight: weight, bias: bias, stride: stride, padding: padding, dilation: dilation,
+                         groups: groups, route: route == .conv3d ? .exact : .winograd)
     }
 }
