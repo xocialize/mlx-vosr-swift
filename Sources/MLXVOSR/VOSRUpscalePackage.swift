@@ -42,24 +42,25 @@ public final class VOSRUpscalePackage: ModelPackage {
             provenance: Provenance(sourceRepo: VOSRConfiguration.fp16Repo, revision: "main", tier: 2),
             requirements: RequirementsManifest(
                 // Split footprint (engine 1.14). resident = the loaded weight set; peakActivation = the
-                // tile-bound DiT transient + the FULL-IMAGE VAE encode/decode at the output resolution
-                // (the dominant term — it grows with output pixels until `vaeWholeFramePixels` tiles it).
-                // Measured with `vosr-smoke run` (MLX peak, release, M5 Max, 2026-09-26; one process per row):
+                // tile-bound DiT transient + the VAE encode/decode — whole-frame up to `vaeWholeFramePixels`
+                // (1024² since AB-D-0120), 1024-px Gaussian-blended tiles above, so the peak no longer grows with
+                // the output past 1024². RE-BASELINED 2026-10-10 to the in-app `phys_footprint` the governor compares
+                // against (AB-T-0185 step 6; ForgeOptimizer `UpscaleMemoryBench` + `vosr-smoke engine`, M5 Max,
+                // 512² still, one process per row):
                 //
-                //   input → output        tier   run     MLX peak
-                //   512²  → 512²  (×1)    fp16   0.3 s   4.67 GB      int8   0.3 s   3.32 GB
-                //   512²  → 1024² (×2)    fp16   1.6 s   5.98 GB      int8   1.7 s   4.70 GB
-                //   512²  → 2048² (×4)    fp16   5.7 s  13.90 GB      int8   6.7 s  12.62 GB   ← pre-chunking; see S7
-                //   above 2048² of output the VAE runs in 1024-px Gaussian-blended tiles (`vaeWholeFramePixels`);
-                //   a 4096² full-image VAE is impossible (the mid-block attention would need a 137 GB score matrix).
+                //   input → output        tier   run      phys peak   MLX pool peak
+                //   512²  → 1024² (×2)    fp16   5.3 s     9.1 GB     6.72 GB   (whole-frame VAE at 1024²)
+                //   512²  → 2048² (×4)    fp16  28.9 s     9.6 GB     6.87 GB   (tiled VAE)
+                //   512²  → 2048² (×4)    int8  28.3 s     8.4 GB     5.59 GB
+                //   512²  → 2048² (×4)    fp16  28.8 s    20.1 GB    16.86 GB   ← the OLD whole-frame default; under the
+                //                                                               engine's 2 GiB MLX cache cap that image
+                //                                                               is WRONG (8.7 dB vs the oracle; AB-D-0120)
                 //
-                // ⚠️ PROVISIONAL — MLX-peak basis, not the in-app `phys_footprint` the governor compares
-                // against (the sibling measured ~2.4× between the two). RE-BASELINE with the image-fleet
-                // batch (AB-T-0019) and replace both numbers.
+                // Declared below with ~6 % margin (`VOSRConfiguration.*Footprint`); the fp32 lane is a derived bound.
                 footprints: [
-                    QuantFootprint(quant: .fp16, residentBytes: 3_400_000_000, peakActivationBytes: 6_000_000_000),
-                    QuantFootprint(quant: .int8, residentBytes: 2_000_000_000, peakActivationBytes: 6_000_000_000),
-                    QuantFootprint(quant: .fp32, residentBytes: 6_700_000_000, peakActivationBytes: 7_000_000_000),
+                    VOSRConfiguration.fp16Footprint,
+                    VOSRConfiguration.int8Footprint,
+                    VOSRConfiguration.fp32Footprint,
                 ],
                 requiredBackends: [.metalGPU],
                 os: OSRequirement(minMacOS: SemanticVersion(major: 26, minor: 0, patch: 0)),

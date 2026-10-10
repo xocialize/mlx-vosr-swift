@@ -9,10 +9,14 @@ import VOSRMLX
 /// `mlp_ca` Linear — measured 46.7 dB vs the fp32 oracle, fp16 49.3 dB; PORTING-SPEC S6), so `quant`
 /// selects the files (fp16 or fp32) and whether the DiT is quantized after loading:
 ///
-///   quant   files            resident (weights)   measured MLX peak, 1024² out
-///   .fp16   *_fp16 (3.35 GB) ≈ 3.4 GB              5.98 GB
-///   .int8   *_fp16 + int8    ≈ 2.0 GB              4.70 GB   ← the BudgetAware fallback
-///   .fp32   *_fp32 (6.7 GB)  ≈ 6.7 GB             10.11 GB   (the parity lane; TF32 on M5 — AB-L-0175)
+///   quant   files            resident (weights)   in-app `phys_footprint` peak, 512² → 2048² (×4, VAE tiled — AB-D-0120)
+///   .fp16   *_fp16 (3.35 GB) ≈ 3.4 GB              9.6 GB   (MLX pool peak 6.87 GB; 28.9 s on an M5 Max)
+///   .int8   *_fp16 + int8    ≈ 2.0 GB              8.4 GB   (5.59 GB; 28.3 s)   ← the BudgetAware fallback
+///   .fp32   *_fp32 (6.7 GB)  ≈ 6.7 GB             not measured in-app — the parity lane (TF32 on M5, AB-L-0175)
+///
+/// The declared footprints (`fp16Footprint` …) are those peaks split as resident + activation, with ~6 % margin;
+/// `vosr-smoke engine` on the real MLXServeEngine (pool cap applied) read within 2 % of the ForgeOptimizer app on the
+/// whole-frame path (20.09 vs 19.66 GB), so the engine-path smoke is the pre-release proxy and the app the basis.
 ///
 /// bf16 is deliberately NOT offered (37.6 dB: an 8-bit mantissa on a residual stream that reaches |126|).
 public struct VOSRConfiguration: PackageConfiguration, ModelStorable, QuantConfigured, BudgetAware {
@@ -28,9 +32,16 @@ public struct VOSRConfiguration: PackageConfiguration, ModelStorable, QuantConfi
     public var tileOverlap: Int
     /// Above this many OUTPUT pixels the VAE encodes/decodes in Gaussian-blended tiles of `vaeTileSize`
     /// (the reference's `--vae_tile_size` lever). The VAE's mid-block attention is single-head over EVERY
-    /// latent position, O(N²): a 2048² output (256² latent) is the largest full-image size measured
-    /// (13.9 GB MLX peak before query-chunking), and a 4096² one asks Metal for a 137 GB score matrix.
-    /// Default 2048² keeps every measured envelope on the seam-free path and tiles above it.
+    /// latent position, O(N²): a 2048² output (256² latent) is the largest full-image size that runs at all
+    /// (16.9 GB MLX peak with query-chunking), and a 4096² one asks Metal for a 137 GB score matrix.
+    ///
+    /// Default **1024²** (AB-D-0120, 2026-10-10): a 1024² output decodes whole-frame, anything larger tiles. Measured
+    /// on a 2048² output, the tiled decode is indistinguishable from the whole-frame one — PSNR 48.1 dB, the
+    /// blend-band seam probe at the whole-frame image's own ratio (0.946× vs 0.949×) — and the ×4 MLX peak falls
+    /// 16.86 → 6.87 GB at the same speed, which is what lets the fp16 tier fit a 16 GB Mac. The old 2048² default is
+    /// still a lever for parity work on the RAW path only: under the engine's 2 GiB MLX cache cap the whole-frame 2048²
+    /// decode comes out WRONG (8.7 dB vs the oracle, deterministic; `vosr-smoke run --cache-limit 2147483648`
+    /// reproduces it, the tiled decode under the same cap is right) — so an engine host must not raise this past 1024².
     public var vaeWholeFramePixels: Int
     public var vaeTileSize: Int
 
@@ -49,8 +60,18 @@ public struct VOSRConfiguration: PackageConfiguration, ModelStorable, QuantConfi
     public static let fp32Repo = "mlx-community/VOSR2-fp32"
     /// The repo serving a lane.
     public static func repo(for quant: Quant) -> String { quant == .fp32 ? fp32Repo : fp16Repo }
-    /// fp16 needs ~3.4 GB resident + ~2.6 GB transient at a 1024² output; below this the int8 tier is loaded.
-    public static let fp16MinBudgetBytes: UInt64 = 7_000_000_000
+    /// In-app `phys_footprint` basis (ForgeOptimizer `UpscaleMemoryBench` + `vosr-smoke engine`, M5 Max, 2026-10-10,
+    /// 512² → 2048² at ×4 on the tiled-VAE default; AB-T-0185 step 6). resident = the governor's charge for the
+    /// loaded weights; activation = measured phys peak − resident, rounded up ~6 %. The in-app whole-frame numbers
+    /// they replace were 19.66 GB (fp16) and 14.34 GB (int8) — provisional MLX-peak declarations had said 9.4 / 8.0.
+    public static let fp16Footprint = QuantFootprint(quant: .fp16, residentBytes: 3_400_000_000, peakActivationBytes: 6_600_000_000)
+    public static let int8Footprint = QuantFootprint(quant: .int8, residentBytes: 2_000_000_000, peakActivationBytes: 6_800_000_000)
+    /// The parity lane is not run in the app; declared as a DERIVED upper bound (weights 6.7 GB; activation 2× fp16's),
+    /// so the governor refuses it where it might not fit rather than admit on a guess.
+    public static let fp32Footprint = QuantFootprint(quant: .fp32, residentBytes: 6_700_000_000, peakActivationBytes: 13_200_000_000)
+    /// Below this much governor headroom an fp16 configuration loads the int8 tier instead: fp16's whole declared
+    /// working set (resident + activation = 10.0 GB), so the fallback engages exactly where fp16 would be refused.
+    public static var fp16MinBudgetBytes: UInt64 { fp16Footprint.residentBytes + fp16Footprint.peakActivationBytes }
     public static let maxScale = 4
 
     public init(quant: Quant = .fp16,
@@ -58,7 +79,7 @@ public struct VOSRConfiguration: PackageConfiguration, ModelStorable, QuantConfi
                 defaultScale: Int = 2,
                 tileSize: Int = 512,
                 tileOverlap: Int = 32,
-                vaeWholeFramePixels: Int = 2048 * 2048,
+                vaeWholeFramePixels: Int = 1024 * 1024,   // AB-D-0120
                 vaeTileSize: Int = 1024,
                 weightsDirectory: URL? = nil,
                 modelsRootDirectory: URL? = nil,

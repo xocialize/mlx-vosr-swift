@@ -318,7 +318,7 @@ func runImage(_ inPath: String, _ outPath: String, _ dir: URL, scale: Int, dtype
     log(String(format: "wrote %@ · mean luma %.1f", outPath as NSString, lum / Double(out.pixels.count / 3)))
 }
 
-func runEngine(_ inPath: String, _ outPath: String, _ dir: URL, scale: Int?, quant: Quant, raw: Bool) async throws {
+func runEngine(_ inPath: String, _ outPath: String, _ dir: URL, scale: Int?, quant: Quant, raw: Bool, vaeWholeFramePixels: Int? = nil) async throws {
     let img = try loadRGB8(inPath)
     let inputImage: MLXToolKit.Image
     if raw {
@@ -326,7 +326,8 @@ func runEngine(_ inPath: String, _ outPath: String, _ dir: URL, scale: Int?, qua
     } else {
         inputImage = MLXToolKit.Image(format: .png, data: try Data(contentsOf: URL(fileURLWithPath: inPath)), width: img.width, height: img.height)
     }
-    let config = VOSRConfiguration(quant: quant, weightsDirectory: dir)
+    var config = VOSRConfiguration(quant: quant, weightsDirectory: dir)
+    if let px = vaeWholeFramePixels { config.vaeWholeFramePixels = px }
     // Full engine path: register (license gate + C10 eligibility) → run (engine constructs/loads the
     // package, C13; explicit weightsDirectory ⇒ nothing to materialize).
     let engine = MLXServeEngine()
@@ -378,7 +379,7 @@ do {
         if gpu { try body() } else { try Device.withDefaultDevice(Device(.cpu), body) }
     case "run":
         guard args.count >= 4 else { throw SmokeError.usage("vosr-smoke run <in.png> <out.png> <weightsDir> [--scale N] [--fp16|--bf16] [--int8] [--seed N] [--cpu] [--vae-tile N]") }
-        var scale = 1, dtype = "fp32", int8 = false, seed: UInt64 = 0, cpu = false, vaeTile: Int? = nil
+        var scale = 1, dtype = "fp32", int8 = false, seed: UInt64 = 0, cpu = false, vaeTile: Int? = nil, cacheLimit: Int? = nil
         var i = 4
         while i < args.count {
             switch args[i] {
@@ -389,14 +390,16 @@ do {
             case "--seed": seed = UInt64(args[i + 1]) ?? 0; i += 2
             case "--cpu": cpu = true; i += 1
             case "--vae-tile": vaeTile = Int(args[i + 1]); i += 2
+            case "--cache-limit": cacheLimit = Int(args[i + 1]); i += 2   // the engine's MLX pool cap, on the raw path (diagnostic)
             default: i += 1
             }
         }
+        if let cacheLimit { GPU.set(cacheLimit: cacheLimit); log("MLX cache limit \(cacheLimit) B") }
         let body = { try runImage(args[1], args[2], URL(fileURLWithPath: args[3]), scale: scale, dtype: dtype, int8: int8, seed: seed, vaeTile: vaeTile) }
         if cpu { try Device.withDefaultDevice(Device(.cpu), body) } else { try body() }
     case "engine":
-        guard args.count >= 4 else { throw SmokeError.usage("vosr-smoke engine <in.png> <out.png> <weightsDir> [--scale N] [--int8|--fp32] [--raw]") }
-        var scale: Int? = nil, quant = Quant.fp16, raw = false
+        guard args.count >= 4 else { throw SmokeError.usage("vosr-smoke engine <in.png> <out.png> <weightsDir> [--scale N] [--int8|--fp32] [--raw] [--vae-whole-frame PX]") }
+        var scale: Int? = nil, quant = Quant.fp16, raw = false, wholeFrame: Int? = nil
         var i = 4
         while i < args.count {
             switch args[i] {
@@ -404,12 +407,13 @@ do {
             case "--int8": quant = .int8; i += 1
             case "--fp32": quant = .fp32; i += 1
             case "--raw": raw = true; i += 1
+            case "--vae-whole-frame": wholeFrame = Int(args[i + 1]); i += 2   // output pixels decoded whole-frame (AB-D-0120 lever)
             default: i += 1
             }
         }
         // Top-level `await` (SE-0343): the engine hops through main-actor monitors, so the main thread must be
         // free to service them — never block it behind a semaphore here (that deadlocks on the first hop).
-        try await runEngine(args[1], args[2], URL(fileURLWithPath: args[3]), scale: scale, quant: quant, raw: raw)
+        try await runEngine(args[1], args[2], URL(fileURLWithPath: args[3]), scale: scale, quant: quant, raw: raw, vaeWholeFramePixels: wholeFrame)
     default:
         throw SmokeError.usage("vosr-smoke keys|gate|run|engine …")
     }

@@ -122,7 +122,8 @@ public final class AttentionBlock2D: Module, UnaryLayer {
     /// N² · 2 B = 8.6 GB at a 256² latent (2048² output) and 137 GB at 512². Chunking the queries bounds it
     /// to `chunk · N · 2 B` with bit-for-bit the same math (softmax is per query row). Below the threshold
     /// the plain SDPA call is kept so the gated 512²/1024² paths are byte-identical to before.
-    static let chunkedQueryThreshold = 8192
+    /// `VOSR_VAE_CHUNK=<queries>` overrides it (diagnostic lever — timing and memory attribution, 2026-10-10).
+    static let chunkedQueryThreshold: Int = getenv("VOSR_VAE_CHUNK").flatMap { Int(String(cString: $0)) } ?? 8192
 
     static func attention(_ q: MLXArray, _ k: MLXArray, _ v: MLXArray, scale: Float) -> MLXArray {
         let n = q.dim(2)
