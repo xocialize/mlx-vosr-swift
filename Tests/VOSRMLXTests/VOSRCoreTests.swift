@@ -134,6 +134,21 @@ final class VOSRStructureXCTests: XCTestCase {
         }
     }
 
+    /// Chunks are sized by score bytes (AB-T-0218): 256 MiB per chunk at any N and dtype, so the tiled decode's
+    /// N = 16 384 keeps its 8192-query fp16 chunks (byte-identical) and a whole-frame 2048² decode drops to 2048.
+    func testChunksAreSizedByBytes() {
+        guard AttentionBlock2D.chunkOverride == nil else { return }   // VOSR_VAE_CHUNK set: a diagnostic run
+        XCTAssertEqual(AttentionBlock2D.queriesPerChunk(keys: 16_384, elementBytes: 2), 8192)
+        XCTAssertEqual(AttentionBlock2D.queriesPerChunk(keys: 65_536, elementBytes: 2), 2048)
+        XCTAssertEqual(AttentionBlock2D.queriesPerChunk(keys: 16_384, elementBytes: 4), 4096)
+        XCTAssertEqual(AttentionBlock2D.queriesPerChunk(keys: 65_536, elementBytes: 4), 1024)
+        XCTAssertEqual(AttentionBlock2D.queriesPerChunk(keys: 1 << 30, elementBytes: 4), 1)
+        for (keys, bytes) in [(16_384, 2), (65_536, 2), (65_536, 4), (262_144, 2)] {
+            XCTAssertLessThanOrEqual(AttentionBlock2D.queriesPerChunk(keys: keys, elementBytes: bytes) * keys * bytes,
+                                     AttentionBlock2D.chunkScoreBytes)
+        }
+    }
+
     /// Gaussian blend peaks at the centre and vanishes at the corners.
     func testGaussianWeights() {
         withCPU {

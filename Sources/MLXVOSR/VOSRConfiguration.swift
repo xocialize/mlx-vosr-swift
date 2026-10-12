@@ -39,9 +39,10 @@ public struct VOSRConfiguration: PackageConfiguration, ModelStorable, QuantConfi
     /// on a 2048² output, the tiled decode is indistinguishable from the whole-frame one — PSNR 48.1 dB, the
     /// blend-band seam probe at the whole-frame image's own ratio (0.946× vs 0.949×) — and the ×4 MLX peak falls
     /// 16.86 → 6.87 GB at the same speed, which is what lets the fp16 tier fit a 16 GB Mac. The old 2048² default is
-    /// still a lever for parity work on the RAW path only: under the engine's 2 GiB MLX cache cap the whole-frame 2048²
-    /// decode comes out WRONG (8.7 dB vs the oracle, deterministic; `vosr-smoke run --cache-limit 2147483648`
-    /// reproduces it, the tiled decode under the same cap is right) — so an engine host must not raise this past 1024².
+    /// still a lever for parity work on the RAW path. Under a host's MLX cache cap (the engine's 2 GiB) the package
+    /// clamps it to 1024², the declared envelope (`VOSRUpscalePackage.wholeFramePixels`, 0.2.2). Before 0.2.2 the
+    /// whole-frame 2048² decode also came out WRONG under that cap (8.7 dB vs the oracle; the attention's 1.07 GB
+    /// per-chunk transients, AB-L-0226); byte-sized chunks fixed that (AB-T-0218).
     public var vaeWholeFramePixels: Int
     public var vaeTileSize: Int
 

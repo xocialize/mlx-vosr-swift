@@ -117,13 +117,29 @@ public final class AttentionBlock2D: Module, UnaryLayer {
         return x + identity
     }
 
-    /// Queries per chunk above which the single-head attention runs query-chunked. The head dim here is
-    /// the full channel width (384), outside mlx's fused-SDPA window, so the score matrix is materialised:
-    /// N² · 2 B = 8.6 GB at a 256² latent (2048² output) and 137 GB at 512². Chunking the queries bounds it
-    /// to `chunk · N · 2 B` with bit-for-bit the same math (softmax is per query row). Below the threshold
-    /// the plain SDPA call is kept so the gated 512²/1024² paths are byte-identical to before.
-    /// `VOSR_VAE_CHUNK=<queries>` overrides it (diagnostic lever — timing and memory attribution, 2026-10-10).
-    static let chunkedQueryThreshold: Int = getenv("VOSR_VAE_CHUNK").flatMap { Int(String(cString: $0)) } ?? 8192
+    /// Queries above which the single-head attention runs query-chunked. The head dim here is the full channel width
+    /// (384), outside mlx's fused-SDPA window, so the score matrix is materialised: N² · 2 B = 8.6 GB at a 256² latent
+    /// (2048² output) and 137 GB at 512². Chunking the queries bounds it to `chunk · N · B` with bit-for-bit the same math
+    /// (softmax is per query row). Below the threshold the plain SDPA call is kept, so the gated 512²/1024² paths are
+    /// byte-identical to before.
+    ///
+    /// `VOSR_VAE_CHUNK=<queries>` overrides both the threshold and the chunk size (diagnostic lever — timing and memory
+    /// attribution, 2026-10-10; `VOSR_VAE_CHUNK=70000` runs a 2048² decode unchunked).
+    static let chunkOverride: Int? = getenv("VOSR_VAE_CHUNK").flatMap { Int(String(cString: $0)) }
+    static let chunkedQueryThreshold: Int = chunkOverride ?? 8192
+
+    /// The score bytes one chunk may materialise: 256 MiB, the tiled decode's known-good working set (two 8192-query
+    /// chunks per 1024² tile at fp16). The loop evaluates every chunk, and under the engine's 2 GiB MLX cache cap a chunk
+    /// near the cap's size comes out WRONG (8192 queries at N = 65 536: 1.07 GB of fp16 scores per chunk, 8.71 dB on a
+    /// whole-frame 2048² decode; AB-L-0226). Sized by bytes, a chunk stays at an eighth of the cap at any N and dtype.
+    static let chunkScoreBytes = 256 << 20
+
+    /// Queries per chunk for `keys` keys of `elementBytes` each: as many as fit `chunkScoreBytes` of scores (8192 for the
+    /// tiled path's N = 16 384 at fp16, so that path is unchanged; 2048 for a whole-frame 2048² decode).
+    static func queriesPerChunk(keys: Int, elementBytes: Int) -> Int {
+        if let chunkOverride { return chunkOverride }
+        return max(1, chunkScoreBytes / max(1, keys * elementBytes))
+    }
 
     static func attention(_ q: MLXArray, _ k: MLXArray, _ v: MLXArray, scale: Float) -> MLXArray {
         let n = q.dim(2)
@@ -131,10 +147,11 @@ public final class AttentionBlock2D: Module, UnaryLayer {
             return MLXFast.scaledDotProductAttention(queries: q, keys: k, values: v, scale: scale, mask: nil)
         }
         let kT = k.transposed(0, 1, 3, 2)
+        let chunk = queriesPerChunk(keys: k.dim(2), elementBytes: q.dtype.size)
         var parts: [MLXArray] = []
         var start = 0
         while start < n {
-            let end = min(start + chunkedQueryThreshold, n)
+            let end = min(start + chunk, n)
             let scores = matmul(q[0..., 0..., start..<end, 0...], kT) * scale
             let out = matmul(softmax(scores, axis: -1), v)
             eval(out)                                                  // release this chunk's score matrix

@@ -37,6 +37,20 @@ vosr-smoke run   <in.png> <out.png> <weightsDir> [--scale N] [--fp16|--bf16] [--
 vosr-smoke engine <in.png> <out.png> <weightsDir> [--scale N] [--int8|--fp32] [--raw]   # the real MLXServeEngine path
 ```
 
+## The VAE under an engine's cache cap (0.2.2)
+
+The VAE's mid-block attention materialises its score matrix (head dim 384 is outside mlx's fused SDPA), so above 8192
+latent positions it runs query-chunked, evaluating each chunk.
+- **The bug.** Up to 0.2.1 a chunk was 8192 queries regardless of N. That's 1.07 GB of fp16 scores at a whole-frame 2048²
+  decode, and under the engine's 2 GiB MLX cache cap that loop came out wrong (8.71 dB vs the oracle; AB-L-0226).
+- **The fix.** Chunks are now sized by bytes: at most 256 MiB of scores per chunk (`AttentionBlock2D.chunkScoreBytes`),
+  2048 queries at that size (AB-T-0218).
+  - The whole-frame 2048² decode under `--cache-limit 2147483648` scores 39.32 dB, the same image as without the cap.
+  - The shipped tiled decode keeps its 8192-query chunks and is byte-identical to 0.2.1, raw and engine path.
+- **The clamp.** Under a host's MLX cache cap (the engine sets one), `VOSRUpscalePackage` clamps `vaeWholeFramePixels` to
+  1024², the envelope the footprints were measured on. A whole-frame 2048² decode needs a 16.9 GB MLX peak. Raw hosts
+  without a cap keep the lever for parity work.
+
 ## Weights
 
 Converted by `oracle/convert_weights.py` from the upstream checkpoints (transformer fp32 5.6 GB / bf16 2.8 GB; VAE

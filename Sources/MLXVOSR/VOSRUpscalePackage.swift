@@ -139,7 +139,9 @@ public final class VOSRUpscalePackage: ModelPackage {
         }
         let x = Self.toTensor(rgb, width: padW, height: padH)
 
-        pipeline.vaeTileSize = padW * padH > configuration.vaeWholeFramePixels ? configuration.vaeTileSize : nil
+        let wholeFrame = Self.wholeFramePixels(configured: configuration.vaeWholeFramePixels,
+                                               cacheLimit: Memory.cacheLimit, memoryLimit: Memory.memoryLimit)
+        pipeline.vaeTileSize = padW * padH > wholeFrame ? configuration.vaeTileSize : nil
         // CAN-2: one cooperative checkpoint per DiT tile, rethrown unchanged; progress per tile (1.18).
         pipeline.checkpoint = { try Task.checkCancellation() }
         pipeline.onTile = { i, n in RunProgress.report(.upsample, step: i, totalSteps: n) }
@@ -154,6 +156,19 @@ public final class VOSRUpscalePackage: ModelPackage {
         }
         guard let png = Self.encodePNG(out, width: outW, height: outH) else { throw VOSRPackageError.imageEncodeFailed }
         return ImageUpscaleResponse(image: Image(format: .png, data: png, width: outW, height: outH), appliedScale: scale)
+    }
+
+    /// The largest output decoded whole-frame under a host's MLX cache cap: 1024², the envelope the declared footprints
+    /// were measured on (AB-D-0120).
+    public nonisolated static let cappedWholeFramePixels = 1024 * 1024
+
+    /// The whole-frame VAE bound a run uses. A host that caps MLX's cache (the engine caps it at 2 GiB, AB-A-0130; MLX's
+    /// own default cache limit is its memory limit) gets at most `cappedWholeFramePixels`. A whole-frame 2048² decode is
+    /// correct under the cap since 0.2.2 (byte-sized attention chunks, AB-T-0218), but it needs a 16.9 GB MLX peak against
+    /// a 6.6 GB declared activation, so an engine host never gets it. Without a cap (a raw host doing parity work) the
+    /// configured value holds.
+    public nonisolated static func wholeFramePixels(configured: Int, cacheLimit: Int, memoryLimit: Int) -> Int {
+        cacheLimit < memoryLimit ? min(configured, cappedWholeFramePixels) : configured
     }
 
     // MARK: - pixels ↔ tensors

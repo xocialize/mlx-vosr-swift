@@ -150,3 +150,20 @@ struct VOSRUpscaleTests {
         return CGImageDestinationFinalize(dest) ? out as Data : nil
     }
 }
+
+/// Under a host's MLX cache cap the whole-frame VAE bound is clamped to the declared envelope (AB-T-0218); MLX's own default
+/// cache limit equals its memory limit, which is no cap.
+struct VOSRWholeFrameClampTests {
+    let gib = 1 << 30
+
+    @Test func cappedHostsDecodeAtMost1024SquaredWholeFrame() {
+        #expect(VOSRUpscalePackage.wholeFramePixels(configured: 2048 * 2048, cacheLimit: 2 * gib, memoryLimit: 150 * gib) == 1024 * 1024)
+        #expect(VOSRUpscalePackage.wholeFramePixels(configured: 1024 * 1024, cacheLimit: 2 * gib, memoryLimit: 150 * gib) == 1024 * 1024)
+        #expect(VOSRUpscalePackage.wholeFramePixels(configured: 512 * 512, cacheLimit: 2 * gib, memoryLimit: 150 * gib) == 512 * 512)
+    }
+
+    @Test func uncappedHostsKeepTheConfiguredLever() {
+        #expect(VOSRUpscalePackage.wholeFramePixels(configured: 2048 * 2048, cacheLimit: 150 * gib, memoryLimit: 150 * gib) == 2048 * 2048)
+        #expect(VOSRConfiguration().vaeWholeFramePixels == VOSRUpscalePackage.cappedWholeFramePixels)
+    }
+}
