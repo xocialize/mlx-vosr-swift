@@ -7,9 +7,11 @@
 //                                                                  quant = the bf16 / int8 tiers, --gpu only)
 //   vosr-smoke run <in.png> <out.png> <weightsDir> [--scale N] [--fp16|--bf16] [--int8] [--seed N] [--cpu] [--vae-tile N]
 //                                                                  S2b: full pipeline on a real image
-//   vosr-smoke engine <in.png> <out.png> <weightsDir> [--scale N] [--int8|--fp32] [--raw]
+//   vosr-smoke engine <in.png> <out.png> <weightsDir> [--scale N] [--int8|--fp32] [--raw] [--deep]
 //                                                                  S7: VOSRUpscalePackage through the REAL
-//                                                                  MLXServeEngine (register → run), explicit dir
+//                                                                  MLXServeEngine (register → run), explicit dir;
+//                                                                  --deep sends a 16-bit file as .rawRGBA16 and
+//                                                                  writes the 16-bit answer as a TIFF (AB-T-0233)
 //
 // Gates run on the CPU stream by default (the numerically strict lane; fp32 goldens). `--gpu` reruns them
 // on Metal to expose the GPU-vs-CPU fp32 gap (TF32 GEMMs on M5, the Winograd conv window).
@@ -318,10 +320,14 @@ func runImage(_ inPath: String, _ outPath: String, _ dir: URL, scale: Int, dtype
     log(String(format: "wrote %@ · mean luma %.1f", outPath as NSString, lum / Double(out.pixels.count / 3)))
 }
 
-func runEngine(_ inPath: String, _ outPath: String, _ dir: URL, scale: Int?, quant: Quant, raw: Bool, vaeWholeFramePixels: Int? = nil) async throws {
+func runEngine(_ inPath: String, _ outPath: String, _ dir: URL, scale: Int?, quant: Quant, raw: Bool, vaeWholeFramePixels: Int? = nil,
+               deep: Bool = false) async throws {
     let img = try loadRGB8(inPath)
     let inputImage: MLXToolKit.Image
-    if raw {
+    if deep {
+        let source = try VOSRUpscalePackage.decodeRGBA16(MLXToolKit.Image(format: .png, data: try Data(contentsOf: URL(fileURLWithPath: inPath))))
+        inputImage = .rawRGBA16(data: source.words.withUnsafeBytes { Data($0) }, width: source.width, height: source.height)
+    } else if raw {
         inputImage = VOSRUpscalePackage.encodeRawBGRA8(img.pixels, width: img.width, height: img.height)
     } else {
         inputImage = MLXToolKit.Image(format: .png, data: try Data(contentsOf: URL(fileURLWithPath: inPath)), width: img.width, height: img.height)
@@ -342,6 +348,22 @@ func runEngine(_ inPath: String, _ outPath: String, _ dir: URL, scale: Int?, qua
     }
     let tRun = now() - t1
     guard let up = resp as? ImageUpscaleResponse else { throw SmokeError.badImage("unexpected response") }
+    if up.image.format == .rawRGBA16, let w = up.image.width, let h = up.image.height {
+        var words = up.image.data.withUnsafeBytes { Array($0.bindMemory(to: UInt16.self)) }
+        var reds = Set<UInt16>(), offGrid = 0
+        for p in 0..<(w * h) { reds.insert(words[p * 4]); for c in 0..<3 where words[p * 4 + c] % 257 != 0 { offGrid += 1 } }
+        let cg = words.withUnsafeMutableBytes { raw in
+            CGContext(data: raw.baseAddress, width: w, height: h, bitsPerComponent: 16, bytesPerRow: w * 8,
+                      space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: VOSRUpscalePackage.rgba16BitmapInfo)!.makeImage()!
+        }
+        let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: outPath) as CFURL, UTType.tiff.identifier as CFString, 1, nil)!
+        CGImageDestinationAddImage(dest, cg, nil); CGImageDestinationFinalize(dest)
+        log(String(format: "engine: register %.2fs · run %.1fs (%@ %d×%d → %d×%d rawRGBA16, appliedScale %d) · %d red levels, %.1f%% off the 8-bit grid · peak MLX %.2f GB",
+                   tReg, tRun, quant.rawValue as NSString, img.width, img.height, w, h, up.appliedScale, reds.count,
+                   100 * Double(offGrid) / Double(w * h * 3), Double(Memory.peakMemory) / 1e9))
+        await engine.evict(package: id)
+        return
+    }
     let out: (pixels: [UInt8], width: Int, height: Int)
     if up.image.format == .rawBGRA8 {
         out = try VOSRUpscalePackage.decodeToRGB8(up.image)
@@ -399,7 +421,7 @@ do {
         if cpu { try Device.withDefaultDevice(Device(.cpu), body) } else { try body() }
     case "engine":
         guard args.count >= 4 else { throw SmokeError.usage("vosr-smoke engine <in.png> <out.png> <weightsDir> [--scale N] [--int8|--fp32] [--raw] [--vae-whole-frame PX]") }
-        var scale: Int? = nil, quant = Quant.fp16, raw = false, wholeFrame: Int? = nil
+        var scale: Int? = nil, quant = Quant.fp16, raw = false, wholeFrame: Int? = nil, deep = false
         var i = 4
         while i < args.count {
             switch args[i] {
@@ -407,13 +429,15 @@ do {
             case "--int8": quant = .int8; i += 1
             case "--fp32": quant = .fp32; i += 1
             case "--raw": raw = true; i += 1
+            case "--deep": deep = true; i += 1
             case "--vae-whole-frame": wholeFrame = Int(args[i + 1]); i += 2   // output pixels decoded whole-frame (AB-D-0120 lever)
             default: i += 1
             }
         }
         // Top-level `await` (SE-0343): the engine hops through main-actor monitors, so the main thread must be
         // free to service them — never block it behind a semaphore here (that deadlocks on the first hop).
-        try await runEngine(args[1], args[2], URL(fileURLWithPath: args[3]), scale: scale, quant: quant, raw: raw, vaeWholeFramePixels: wholeFrame)
+        try await runEngine(args[1], args[2], URL(fileURLWithPath: args[3]), scale: scale, quant: quant, raw: raw, vaeWholeFramePixels: wholeFrame,
+                            deep: deep)
     default:
         throw SmokeError.usage("vosr-smoke keys|gate|run|engine …")
     }

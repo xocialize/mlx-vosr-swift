@@ -51,6 +51,27 @@ latent positions it runs query-chunked, evaluating each chunk.
   1024², the envelope the footprints were measured on. A whole-frame 2048² decode needs a 16.9 GB MLX peak. Raw hosts
   without a cap keep the lever for parity work.
 
+## 16 bits out (0.3.0)
+
+The surface declares `rawImageFormats = [.rawBGRA8, .rawRGBA16]` (MLXToolKit contract 1.52.0; AB-T-0233, decision
+AB-D-0127 option (a)).
+- **Prep:** a `.rawRGBA16` image, or a PNG/TIFF deeper than 8 bits, is rounded to 8 bits for the reference Pillow-bicubic
+  prep, unchanged, so the oracle gate still measures what ships. The rounding is `(v·255 + 32767) / 65535`, Pixel Agency
+  Desktop's.
+- **Decode:** the final latent is decoded by a float32 copy of the VAE at 768-px tiles. The fp16 decode leaves a
+  half-precision grid under a 16-bit output: residues mod 16 of values ≥ ½ are 40–46% mid against 62.5% for a float
+  output, and the staircase metric stays above the interpolation's.
+- **Output:** written at 16 bits: `.rawRGBA16` for raw, a 16-bit PNG otherwise.
+- **Measured (G-6 direct gate through Pixel Agency Image Engine, five CC0 photos at ×4):**
+  - the 16-bit output's smooth-area flat-neighbour share is at or below the 16-bit interpolation's on every photo
+    (Canon 0.038 vs 0.052, Sony 0.009 vs 0.023), against 0.22–0.87 at 8 bits;
+  - residues are uniform (62.5%);
+  - the phys peak is within 0.2 GB of the 8-bit run's.
+- **Tiles:** 768 holds the float32 decode's MLX peak (6.8 GB) at the fp16 decode's at 1024. Against a whole-frame float32
+  decode it scores 48.3 / 53.7 dB, with the blend-band gradient ratio the whole-frame image's own, so there's no seam.
+- **8-bit inputs** take the 8-bit path: 11/11 outputs byte-identical to 0.2.2 (engine png ×4 / ×2 / rawBGRA8 ×4, and the
+  raw pipeline).
+
 ## Weights
 
 Converted by `oracle/convert_weights.py` from the upstream checkpoints (transformer fp32 5.6 GB / bf16 2.8 GB; VAE

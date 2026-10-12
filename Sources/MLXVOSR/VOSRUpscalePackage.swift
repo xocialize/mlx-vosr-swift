@@ -30,6 +30,12 @@ public enum VOSRPackageError: Error, Equatable {
 /// Born sweep-clean (1.14): split footprint per quant, `QuantConfigured`, `BudgetAware` fp16→int8,
 /// `unload()` flushes the MLX pool; born materialization-clean (`WeightSourcing`, engine-executed) and
 /// cancel-clean (entry checkpoint + one per DiT tile, `RunProgress` per tile).
+///
+/// **16 bits out** (contract 1.52.0; AB-T-0233, decision AB-D-0127 option (a)): the surface declares `.rawRGBA16`. A
+/// `.rawRGBA16` image, or a PNG/TIFF deeper than 8 bits, is rounded to 8 bits for the reference prep (the Pillow bicubic
+/// the oracle gate is defined on, unchanged), runs the same encode and DiT, and has its final latent decoded by a
+/// float32 copy of the VAE at `VOSRConfiguration.deepDecodeTileSize` tiles. The model's float result comes back at 16
+/// bits: `.rawRGBA16` for raw, a 16-bit PNG otherwise. 8-bit inputs take the 8-bit path byte for byte.
 @InferenceActor
 public final class VOSRUpscalePackage: ModelPackage {
     public typealias Configuration = VOSRConfiguration
@@ -54,7 +60,15 @@ public final class VOSRUpscalePackage: ModelPackage {
                 //   512²  → 2048² (×4)    int8  28.3 s     8.4 GB     5.59 GB
                 //   512²  → 2048² (×4)    fp16  28.8 s    20.1 GB    16.86 GB   ← the OLD whole-frame default; under the
                 //                                                               engine's 2 GiB MLX cache cap that image
-                //                                                               is WRONG (8.7 dB vs the oracle; AB-D-0120)
+                //                                                               was WRONG before 0.2.2 (8.7 dB vs the
+                //                                                               oracle; AB-D-0120, AB-T-0218)
+                //
+                // A 16-bit request (0.3.0, AB-T-0233) decodes with a float32 VAE at 768-px tiles: `vosr-smoke engine --deep`,
+                // release, M5 Max, 2026-10-12, beside the same image at 8 bits:
+                //   512²  → 2048² (×4)    fp16 + float32 decode   8.4 s   8.86 GB   6.10 GB   (8-bit: 8.66 GB)
+                //   768×507 → 3072×2028   fp16 + float32 decode  12.8 s   9.00 GB   6.19 GB   (8-bit: 8.80 GB)
+                // The +0.2 GB is the float32 VAE's weights (loaded on the first 16-bit request); both stay under the
+                // declared 3.4 + 6.6 GB.
                 //
                 // Declared below with ~6 % margin (`VOSRConfiguration.*Footprint`); the fp32 lane is a derived bound.
                 footprints: [
@@ -72,6 +86,8 @@ public final class VOSRUpscalePackage: ModelPackage {
                     name: "vosr2-upscale",
                     summary: "VOSR2 one-step generative super-resolution (1.4B DiT + DINOv2-L conditioning), ×1–×4, 512² latent-tiled; the generative stills tier."
                 )
+                // Mirrors rawBGRA8 (since 0.1.0) and writes 16 bits for rawRGBA16 and deep PNG (0.3.0).
+                .declaring(rawImageFormats: [.rawBGRA8, .rawRGBA16])
             ]
         )
     }
@@ -79,6 +95,11 @@ public final class VOSRUpscalePackage: ModelPackage {
     private let configuration: Configuration
     private var pipeline: VOSR2Pipeline?
     private var loadedQuant: Quant?
+    /// Where `load()` read the weights, for the deep decoder's VAE.
+    private var weightsDirectory: URL?
+    /// The float32 VAE a 16-bit request decodes with: loaded on the first one (the fp16 VAE's weights cast, ~180 MB),
+    /// the lane's own VAE on the fp32 lane. Dropped by `unload()`.
+    private var deepDecoder: AutoencoderKLQwenImage2D?
 
     public nonisolated init(configuration: Configuration) {
         self.configuration = configuration
@@ -106,11 +127,13 @@ public final class VOSRUpscalePackage: ModelPackage {
         p.tileOverlap = configuration.tileOverlap
         pipeline = p
         loadedQuant = quant
+        weightsDirectory = dir
     }
 
     public func unload() async {
         pipeline = nil
         loadedQuant = nil
+        deepDecoder = nil
         MLX.Memory.clearCache()   // release the retained MLX pool so eviction frees RSS
     }
 
@@ -122,7 +145,9 @@ public final class VOSRUpscalePackage: ModelPackage {
             throw PackageError.unsupportedCapability(request.capability)
         }
 
-        let src = try Self.decodeToRGB8(req.image)
+        // A 16-bit image is rounded to 8 bits for the reference prep (`deep` keeps the 16-bit decode and output).
+        let deep = Self.isDeep(req.image)
+        let src = deep ? try Self.decodeDeepToRGB8(req.image) : try Self.decodeToRGB8(req.image)
         let scale = min(max(req.scale ?? configuration.defaultScale, 1), VOSRConfiguration.maxScale)
         let (outW, outH) = (src.width * scale, src.height * scale)
 
@@ -147,7 +172,17 @@ public final class VOSRUpscalePackage: ModelPackage {
         pipeline.onTile = { i, n in RunProgress.report(.upsample, step: i, totalSteps: n) }
         defer { pipeline.checkpoint = nil; pipeline.onTile = nil }
 
-        let y = try pipeline.superResolve(x, seed: configuration.seed)
+        let decoder = deep ? try deepDecoder(for: pipeline) : nil
+        let y = try pipeline.superResolve(x, seed: configuration.seed, decoder: decoder)
+        if deep {
+            // 16 bits out: rawRGBA16 in ⇒ rawRGBA16 out, a deep PNG/TIFF in ⇒ a 16-bit PNG.
+            let words = Self.toRGBA16(y, cropWidth: outW, cropHeight: outH)
+            if req.image.format == .rawRGBA16 {
+                return ImageUpscaleResponse(image: .rawRGBA16(data: Self.data(words), width: outW, height: outH), appliedScale: scale)
+            }
+            guard let png = Self.encodePNG16(words, width: outW, height: outH) else { throw VOSRPackageError.imageEncodeFailed }
+            return ImageUpscaleResponse(image: Image(format: .png, data: png, width: outW, height: outH), appliedScale: scale)
+        }
         let out = Self.toRGB8(y, cropWidth: outW, cropHeight: outH)
 
         // Output mirrors the input format: rawBGRA8 in ⇒ rawBGRA8 out (no re-encode); else .png.
@@ -156,6 +191,25 @@ public final class VOSRUpscalePackage: ModelPackage {
         }
         guard let png = Self.encodePNG(out, width: outW, height: outH) else { throw VOSRPackageError.imageEncodeFailed }
         return ImageUpscaleResponse(image: Image(format: .png, data: png, width: outW, height: outH), appliedScale: scale)
+    }
+
+    /// The decoder a 16-bit request uses: a float32 VAE (the lane's own on fp32; the fp16 VAE's weights cast otherwise,
+    /// loaded once) at `VOSRConfiguration.deepDecodeTileSize` tiles.
+    private func deepDecoder(for pipeline: VOSR2Pipeline) throws -> VOSR2Pipeline.Decoder {
+        if deepDecoder == nil {
+            if loadedQuant == .fp32 {
+                deepDecoder = pipeline.vae
+            } else {
+                guard let dir = weightsDirectory,
+                      let file = VOSRConfiguration.files(for: .fp16).first(where: { $0.hasPrefix("vae_") }) else {
+                    throw VOSRPackageError.weightsDirectoryUnresolved
+                }
+                let vae = AutoencoderKLQwenImage2D()
+                try vae.loadExact(url: dir.appendingPathComponent(file), component: "vae", cast: .float32)
+                deepDecoder = vae
+            }
+        }
+        return VOSR2Pipeline.Decoder(vae: deepDecoder!, tileSize: VOSRConfiguration.deepDecodeTileSize)
     }
 
     /// The largest output decoded whole-frame under a host's MLX cache cap: 1024², the envelope the declared footprints
@@ -250,6 +304,97 @@ public final class VOSRUpscalePackage: ModelPackage {
                                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
                                provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
         else { return nil }
+        let out = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(out, UTType.png.identifier as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(dest, cg, nil)
+        return CGImageDestinationFinalize(dest) ? out as Data : nil
+    }
+
+    // MARK: - 16 bits (contract 1.52.0, AB-T-0233)
+
+    /// RGBA, 16 bits per component, little-endian, premultiplied — `.rawRGBA16`'s layout as CoreGraphics draws it.
+    public nonisolated static let rgba16BitmapInfo =
+        CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder16Little.rawValue
+
+    /// Whether `image` is deeper than 8 bits: `.rawRGBA16`, or a PNG/TIFF with more than 8 bits per component.
+    public nonisolated static func isDeep(_ image: Image) -> Bool {
+        if image.format == .rawRGBA16 { return true }
+        guard image.format != .rawBGRA8, let source = CGImageSourceCreateWithData(image.data as CFData, nil),
+              let cg = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return false }
+        return cg.bitsPerComponent > 8
+    }
+
+    /// A deep image's 16-bit RGBA words (sRGB), tightly packed.
+    public nonisolated static func decodeRGBA16(_ image: Image) throws -> (words: [UInt16], width: Int, height: Int) {
+        if image.format == .rawRGBA16 {
+            guard let w = image.width, let h = image.height, w > 0, h > 0 else {
+                throw VOSRPackageError.imageDecodeFailed("rawRGBA16 requires width/height")
+            }
+            let stride = image.bytesPerRow ?? (w * 8)
+            guard stride >= w * 8, image.data.count >= stride * h else {
+                throw VOSRPackageError.imageDecodeFailed("rawRGBA16 data too small (\(image.data.count) < \(stride * h))")
+            }
+            var words = [UInt16](repeating: 0, count: w * h * 4)
+            words.withUnsafeMutableBytes { dst in
+                image.data.withUnsafeBytes { src in
+                    for row in 0..<h {
+                        memcpy(dst.baseAddress!.advanced(by: row * w * 8), src.baseAddress!.advanced(by: row * stride), w * 8)
+                    }
+                }
+            }
+            return (words, w, h)
+        }
+        guard let source = CGImageSourceCreateWithData(image.data as CFData, nil),
+              let cg = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            throw VOSRPackageError.imageDecodeFailed("unreadable \(image.format.rawValue) data")
+        }
+        let (w, h) = (cg.width, cg.height)
+        var words = [UInt16](repeating: 0, count: w * h * 4)
+        let drawn: Bool = words.withUnsafeMutableBytes { raw in
+            guard let ctx = CGContext(data: raw.baseAddress, width: w, height: h, bitsPerComponent: 16, bytesPerRow: w * 8,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: rgba16BitmapInfo) else { return false }
+            ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        guard drawn else { throw VOSRPackageError.imageDecodeFailed("CGContext for RGBA16 draw") }
+        return (words, w, h)
+    }
+
+    /// A deep image as interleaved RGB8 for the reference prep: each component rounded, `(v·255 + 32767) / 65535`, the
+    /// rounding Pixel Agency Desktop's 8-bit route sends (so a 16-bit request's DiT sees what that route's would).
+    public nonisolated static func decodeDeepToRGB8(_ image: Image) throws -> (pixels: [UInt8], width: Int, height: Int) {
+        let (words, w, h) = try decodeRGBA16(image)
+        return (rgb8(rounding: words, count: w * h), w, h)
+    }
+
+    @inline(never)
+    nonisolated static func rgb8(rounding words: [UInt16], count: Int) -> [UInt8] {
+        var rgb = [UInt8](repeating: 0, count: count * 3)
+        for p in 0..<count {
+            for c in 0..<3 { rgb[p * 3 + c] = UInt8((UInt32(UInt16(littleEndian: words[p * 4 + c])) * 255 + 32767) / 65535) }
+        }
+        return rgb
+    }
+
+    /// NCHW [−1, 1] → RGBA16 words (`x·0.5 + 0.5`, clamped, ×65535 rounded; alpha opaque), cropped to the requested size.
+    @inline(never)
+    public nonisolated static func toRGBA16(_ x: MLXArray, cropWidth w: Int, cropHeight h: Int) -> [UInt16] {
+        let v = clip(x[0, 0..., 0..<h, 0..<w].transposed(1, 2, 0) * 0.5 + 0.5, min: 0.0, max: 1.0).asType(.float32).asArray(Float.self)
+        var words = [UInt16](repeating: UInt16.max, count: w * h * 4)
+        for p in 0..<(w * h) {
+            for c in 0..<3 { words[p * 4 + c] = UInt16((v[p * 3 + c] * 65535).rounded()).littleEndian }
+        }
+        return words
+    }
+
+    nonisolated static func data(_ words: [UInt16]) -> Data { words.withUnsafeBytes { Data($0) } }
+
+    /// RGBA16 words as a 16-bit sRGB PNG.
+    nonisolated static func encodePNG16(_ words: [UInt16], width w: Int, height h: Int) -> Data? {
+        guard let provider = CGDataProvider(data: data(words) as CFData),
+              let cg = CGImage(width: w, height: h, bitsPerComponent: 16, bitsPerPixel: 64, bytesPerRow: w * 8,
+                               space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGBitmapInfo(rawValue: rgba16BitmapInfo),
+                               provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return nil }
         let out = NSMutableData()
         guard let dest = CGImageDestinationCreateWithData(out, UTType.png.identifier as CFString, 1, nil) else { return nil }
         CGImageDestinationAddImage(dest, cg, nil)

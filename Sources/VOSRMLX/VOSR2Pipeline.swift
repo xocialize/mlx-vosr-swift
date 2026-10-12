@@ -121,8 +121,20 @@ public final class VOSR2Pipeline {
     }
 
     /// `decode_dispatch`: pixels NCHW in [−1, 1] from a normalised latent.
-    public func decodeLatent(_ z: MLXArray) -> MLXArray {
-        guard let ts = vaeTileSize, ts > 0 else { return vae.decodeNormalized(z) }
+    public func decodeLatent(_ z: MLXArray) -> MLXArray { decodeLatent(z, with: vae, tileSize: vaeTileSize) }
+
+    /// A decode other than `vae` at `vaeTileSize`. A 16-bit request decodes the final latent with the VAE's weights cast to
+    /// float32 (AB-T-0233, AB-D-0127): the fp16 decode leaves a half-precision grid under a 16-bit output (AB-L-0238).
+    /// Float32 activations double the decode's working set, so it carries its own, smaller tile size.
+    public struct Decoder {
+        public let vae: AutoencoderKLQwenImage2D
+        public let tileSize: Int?
+        public init(vae: AutoencoderKLQwenImage2D, tileSize: Int?) { self.vae = vae; self.tileSize = tileSize }
+    }
+
+    /// `decodeLatent` with another VAE and tile size (`nil`: the whole latent at once).
+    public func decodeLatent(_ z: MLXArray, with vae: AutoencoderKLQwenImage2D, tileSize: Int?) -> MLXArray {
+        guard let ts = tileSize, ts > 0 else { return vae.decodeNormalized(z) }
         let (lh, lw) = (z.dim(2), z.dim(3))
         let (ltSize, ltOverlap) = Self.tileParams(tileSize: ts, tileOverlap: ts / 8, lh: lh, lw: lw)
         if lh <= ltSize && lw <= ltSize { return vae.decodeNormalized(z) }
@@ -170,13 +182,15 @@ public final class VOSR2Pipeline {
     }
 
     /// `tiled_latent_inference` with `infer_steps = 1`: NCHW [−1, 1] in → NCHW [−1, 1] out, same size.
-    /// `noise` (normalised-latent shaped, NCHW) overrides the seeded draw.
-    public func superResolve(_ lq: MLXArray, noise: MLXArray? = nil, seed: UInt64 = 0) throws -> MLXArray {
-        try superResolveTraced(lq, noise: noise, seed: seed).output
+    /// `noise` (normalised-latent shaped, NCHW) overrides the seeded draw. `decoder` decodes the final latent (float32,
+    /// for a 16-bit output) in place of `vae` at `vaeTileSize`; the encode and the DiT are the same either way.
+    public func superResolve(_ lq: MLXArray, noise: MLXArray? = nil, seed: UInt64 = 0, decoder: Decoder? = nil) throws -> MLXArray {
+        try superResolveTraced(lq, noise: noise, seed: seed, decoder: decoder).output
     }
 
     /// `superResolve` that also returns the intermediates (parity gates).
-    public func superResolveTraced(_ lq: MLXArray, noise: MLXArray? = nil, seed: UInt64 = 0) throws -> (output: MLXArray, trace: Trace) {
+    public func superResolveTraced(_ lq: MLXArray, noise: MLXArray? = nil, seed: UInt64 = 0,
+                                   decoder: Decoder? = nil) throws -> (output: MLXArray, trace: Trace) {
         let b = lq.dim(0)
         let lqLatent = try encodeLatent(lq)
         eval(lqLatent)
@@ -231,7 +245,8 @@ public final class VOSR2Pipeline {
         // z = z − (t_cur − t_nxt) · u with t: 1 → 0
         let z1 = z0.asType(.float32) - velocity
         try checkpoint?()
-        let out = decodeLatent(z1.asType(lqLatent.dtype))
+        // A deep decoder takes the float32 latent as it is; the default decode casts it to the lane's dtype, as before.
+        let out = decoder.map { decodeLatent(z1, with: $0.vae, tileSize: $0.tileSize) } ?? decodeLatent(z1.asType(lqLatent.dtype))
         eval(out)
         return (out, Trace(latent: lqLatent, noise: z0, velocity: velocity, latentOut: z1))
     }

@@ -75,6 +75,12 @@ public struct VOSRConfiguration: PackageConfiguration, ModelStorable, QuantConfi
     public static var fp16MinBudgetBytes: UInt64 { fp16Footprint.residentBytes + fp16Footprint.peakActivationBytes }
     public static let maxScale = 4
 
+    /// VAE tile size, in output pixels, for a 16-bit request's float32 decode (AB-T-0233). Float32 doubles the decode's
+    /// activations; at 768-px tiles its MLX peak (6.79–6.84 GB at 2048² and 3072×2028) stays at or below the fp16 decode's
+    /// at 1024 (6.82–6.88 GB), so the declared envelope holds. Measured against a whole-frame float32 decode: 48.3 / 53.7 dB,
+    /// and the blend-band gradient ratio the whole-frame image's own (0.604 vs 0.608, 0.806 vs 0.808): no seam.
+    public static let deepDecodeTileSize = 768
+
     public init(quant: Quant = .fp16,
                 seed: UInt64 = 0,
                 defaultScale: Int = 2,
